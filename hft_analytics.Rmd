@@ -1,0 +1,1116 @@
+---
+title: "hft analytics"
+author: "michael downs"
+date: "June 29, 2015"
+output: pdf_document
+---
+
+## Setup for all questions
+### a. load / transform trade data
+
+I've suppressed most of the code for this first part as it follows the scripts provided closely up to loading xts_data_F and xts_data_GM into memory via highfrequency. However, I will highlight the my handling of exchanges. Madhavan et al in Market Microstructures (2001) suggest exchange can impact spreads, price. 
+
+To balance the importance of exchange signal with the need to reducing total records. I graph trade volume by exchange, identify a subset of exchanges which a. have relatively high trade volmes (and therefore offer liquidity) and b. are common for both F and GM. 
+
+```{r eval=FALSE,cache=TRUE,echo=FALSE,results='hide',message=FALSE,warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+# load libraries
+library(highfrequency)
+library(timeDate)
+library(TTR)
+library(tseries)
+library(xts)
+library(quantmod)
+# read WRDS data file
+data = read.csv("331a0abb828cd3d0.csv")
+
+# convert contents
+col.order = c("SYMBOL","DATE","TIME","PRICE","SIZE","G127","CORR","COND","EX")
+
+split_agg_WRDS_data <- function(data,output_location)
+{  
+  curr_dir = getwd()
+  new_dir = setwd(output_location)
+  for(s in levels(data$SYMBOL))
+  {
+    subset = data[data$SYMBOL == s,]
+    
+    for(col in col.order)
+    {
+      idx = which(colnames(subset) %in% col)
+      if(length(idx) == 0)
+        subset[,col] = rep(0,dim(subset)[1])
+    }
+    
+    subset = subset[,col.order]
+    fname = paste(s,"_trades.csv",sep="")
+    write.csv(subset,file=fname,row.names=FALSE)
+  }
+  setwd(curr_dir)
+}
+
+split_agg_WRDS_data(data,output_location="/Users/mdowns/Documents/Pers/Ed/Courses/stats242/homework")
+
+# load data into highfrequency
+#from jan 1 to jun 30, 2013
+from = "2013-01-01"
+to = "2013-06-30"
+
+datasource = "/Users/mdowns/Documents/Pers/Ed/Courses/stats242/homework"
+datadestination = "/Users/mdowns/Documents/Pers/Ed/Courses/stats242/homework/xts_data"
+
+# highfrequency function to convert data to proper format
+convert( from=from, to=to, datasource=datasource, 
+         datadestination=datadestination, trades = T,  
+         quotes = F, ticker="F", dir = TRUE, extension = "csv", 
+         header = TRUE, tradecolnames = col.order , quotecolnames = NULL, 
+         format="%Y%m%d %H:%M:%S", onefile = TRUE )
+
+convert( from=from, to=to, datasource=datasource, 
+         datadestination=datadestination, trades = T,  
+         quotes = F, ticker="GM", dir = TRUE, extension = "csv", 
+         header = TRUE, tradecolnames = col.order , quotecolnames = NULL, 
+         format="%Y%m%d %H:%M:%S", onefile = TRUE )
+```
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+library(highfrequency)
+library(timeDate)
+library(TTR)
+
+from = "2013-01-01"
+to = "2013-06-30"
+
+datasource = "/Users/mdowns/Documents/Pers/Ed/Courses/stats242/homework"
+datadestination = "/Users/mdowns/Documents/Pers/Ed/Courses/stats242/homework/xts_data"
+
+# load trade data into memory
+xts_data_F = TAQLoad( tickers=c("F"), from=from,to=to,trades=T,quotes=F, 
+                      datasource=datadestination)
+xts_data_GM = TAQLoad( tickers=c("GM"), from=from,to=to,trades=T,quotes=F, 
+                       datasource=datadestination)
+
+```
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='asis',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+# separate by exchange
+exchg_F=unique(xts_data_F$EX); exchg_GM=unique(xts_data_GM$EX)
+exchg_F=exchg_F[order(exchg_F,decreasing=F)]
+rcds_exchg_F=NULL; rcds_exchg_GM=NULL
+
+for(i in 1:length(exchg_F)){
+     rcds_exchg_F[i]=sum(xts_data_F$EX==exchg_F[i])
+     rcds_exchg_GM[i]=sum(xts_data_GM$EX==exchg_GM[i])
+}
+
+par(mfrow=c(1,2))
+plot(rcds_exchg_F,type="l",col="red",ylab="trades",xlab="exchange",main="trade volume by exchange")
+lines(rcds_exchg_GM,type="l",col="blue")
+legend("topright", c("F","GM"), col=c("red","blue"), cex=0.7,lwd=1)
+
+plot(rcds_exchg_F/dim(xts_data_F)[1],type="l",col="red",ylab="trades",xlab="exchange",
+     main="pct volume by exchange")
+lines(rcds_exchg_GM/dim(xts_data_GM)[1],type="l",col="blue")
+legend("topright", c("F","GM"), col=c("red","blue"), cex=0.7,lwd=1)
+
+# top 4 exchanges by volume (NASD, NASDAQ, Arca, BATS) are common
+top.vol.F=exchg_F[order(rcds_exchg_F,decreasing=T)];top.vol.F
+top.vol.GM=exchg_GM[order(rcds_exchg_GM,decreasing=T)];top.vol.GM
+
+# take common exchanges forward accounting for 66.6% F and 69.2% GM vol
+xts_data_F.bak=
+xts_data_F=xts_data_F[xts_data_F$EX %in% c("D","T","P","Z")]
+xts_data_GM=xts_data_GM[xts_data_GM$EX %in% c("D","T","P","Z")]
+```
+
+### b. aggregate trade data
+
+I've suppressed the aggregation code, but present the following graphics to note that, after differencing price, the resulting distributions still depart significantly from the normal distribution.
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,message=FALSE,results='asis',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+#get and plot the number of trades, removing NAs
+numtrades.5min.F = aggregatets(xts_data_F$PRICE,FUN="length",on="minutes",k=5)
+numtrades.5min.F.nona = numtrades.5min.F[- which(is.na(numtrades.5min.F))]
+
+numtrades.5min.GM = aggregatets(xts_data_GM$PRICE,FUN="length",on="minutes",k=5)
+numtrades.5min.GM.nona = numtrades.5min.GM[- which(is.na(numtrades.5min.GM))]
+
+# calcuate prices. note: i'll trim the time range later.
+price.1sec.F=aggregatets(xts_data_F$PRICE,FUN="previoustick",on="seconds",k=1,dropna=T)
+price.1sec.GM=aggregatets(xts_data_GM$PRICE,FUN="previoustick",on="seconds",k=1,dropna=T)
+
+price.5min.F = aggregatets(xts_data_F$PRICE,on="minutes",k=5)
+price.5min.GM = aggregatets(xts_data_GM$PRICE,on="minutes",k=5)
+
+price.5min.F = aggregate(price.5min.F,time(price.5min.F),mean)
+price.5min.GM = aggregate(price.5min.GM,time(price.5min.GM),mean)
+
+price.5min.both = merge(price.5min.GM,price.5min.F)
+colnames(price.5min.both) = c("GM","F")
+#plot.zoo(price.5min.both,col=c("red","blue"),plot.type="multiple")
+
+f <- function(x) { log(tail(x, 1)) - log(head(x,1))}
+rt.5min.F = rollapply(price.5min.F, FUN=f, width=2)
+rt.5min.F = xts(rt.5min.F)
+
+rt.5min.GM = rollapply(price.5min.GM, FUN=f, width=2)
+rt.5min.GM = xts(rt.5min.GM)
+
+# plot returns / trade vol
+F.5min = merge(numtrades.5min.F.nona,rt.5min.F)
+colnames(F.5min) = c("NUMTRADES","LOGRT")
+
+GM.5min = merge(numtrades.5min.GM.nona,rt.5min.GM)
+colnames(GM.5min) = c("NUMTRADES","LOGRT")
+
+# remove NAs for plotting
+idx.remove = which( is.na(F.5min$NUMTRADES) | is.na(F.5min$LOGRT))
+F.5min = F.5min[-idx.remove]
+
+idx.remove = which( is.na(GM.5min$NUMTRADES) | is.na(GM.5min$LOGRT))
+GM.5min = GM.5min[-idx.remove]
+```
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+# return shape distribution analysis
+library(MASS)
+
+distribution_analysis=function(x,ttl=NULL,xaxis=NULL){
+     par(mfrow=c(1,3));par(pty="s")
+     hist(x,main=paste(ttl,"histogram",sep=" "),xlab=xaxis)
+     # actual vs normal
+     hist(x, prob=T,ylim=c(0,30),xlim=c(-0.1,0.1),col=0,breaks=250,
+          xlab=xaxis,main=paste(ttl,"histogram zoom-in",sep=" "))
+     lines(density(x),lty=3)
+     z <- seq(-0.1, 0.1, 0.001)
+     lines(z, dnorm(z,mean(z), sqrt(var(x))), lty=1)
+     leg.names <- c("Kernel Density", "Normal Density")
+     legend("topright", leg.names, lty=c(3,1),cex=0.7) 
+     
+     qqnorm(x,main=paste(ttl,"quantiles",sep=" "));qqline(x)
+}
+
+distribution_analysis(diff(price.5min.F),"F","diff(x)")
+distribution_analysis(diff(price.5min.GM),"GM","diff(x)")
+```
+
+## problem 1
+### 1(a) Plot the price series and comment on its stationarity.
+
+The plots below show both the price series and autocorrelation values for F and GM. The price graphs indicate series that deviate from both strict (probability distribution of values from underlying process does not change shape and location over time) and weak stationarity (first moments of that probability distribution are stationary i.e., mean and variance). The acf graphs show the extent of autocorrelation between prices over time. Yesterday's price says a lot about today's price for both F and GM. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+par(mfrow=c(2,2));par(pty="s")
+ts.plot(price.5min.F,main="F price over time")
+acf(price.5min.F,na.action=na.pass,main="F autocorrelation (acf)")
+ts.plot(price.5min.GM,main="GM price over time")
+acf(price.5min.GM,na.action=na.pass,main="GM autocorrelation (acf)")
+```
+
+Non-stationarity in both price series is further confirmed by both Dickey-Fuller and Ljung unit root tests. In the code below, I set up functions for testing root stationarity (using Dickey-Fuller and Ljung tests) and trend stationarity (using Kwiatkowski and Ljung tests). I then use the root tests on F and GM price series and find them to be non-staionary. 
+
+First for F:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+test_root=function(x,axis=NA){
+     library(fUnitRoots)
+     result=as.data.frame(matrix(NA,length(x),5))
+     names(result)=c("period","adf pval","adf result","ljung pval","ljung result")
+     j=1
+     for(i in 1:length(x)){
+          result[j,1]=axis[i]
+          result[j,2]=adfTest(as.numeric(x[[i]]),lags=12,type="ct")@test$p.value
+          result[j,3]=if(result[j,2]<0.1){"stationary"}else{"non-stationary"}
+          result[j,4]=Box.test(as.numeric(x[[i]]),lag=12,type="Ljung-Box")$p.value
+          result[j,5]=if(result[j,4]>0.05){"stationary"}else{"non-stationary"}
+          j=j+1
+     }
+     return(result)
+}
+
+test_trend=function(x,axis=NA){
+     library(urca)
+     result=as.data.frame(matrix(NA,length(x),5))
+     names(result)=c("period","kpss pval","kpss result","ljung pval","ljung result")
+     j=1
+     for(i in 1:length(x)){
+          result[j,1]=axis[i]
+          tmp=ur.kpss(as.numeric(x[[i]]),lags="long",type="tau")
+          result[j,2]=tmp@teststat
+          result[j,3]=if(result[j,2]<tmp@cval[2]){"stationary"}else{"non-stationary"}
+          result[j,4]=Box.test(as.numeric(x[[i]]),lag=12,type="Ljung-Box")$p.value
+          result[j,5]=if(result[j,4]>0.05){"stationary"}else{"non-stationary"}
+          j=j+1
+     }
+     return(result)
+}
+
+test_root(list(price.5min.F),"5min")
+
+```
+
+Then for GM:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+test_root(list(price.5min.GM),"5min")
+
+```
+
+### 1(b) Use ACF and PACF, identify appropriate ARMA models. 
+
+Basic transformations (including differencing price, taking price variance and calculating log returns) reduce non-stationary effects of the price series. The graphics below show the partial autocorrelations for the price series after transformation. Each graphic is followed by a table showing which transformation / lag combinations violate the $\frac{2}{\sqrt(T)}$ constraint using both acf and pacf.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+identify_arma=function(x,do.log=TRUE,ttl=NULL){
+     result=as.data.frame(matrix(NA,6,14));
+     names(result)=c("model","variable",c(1:12))
+     result[1:3,1]="acf";result[4:6,1]="pacf"
+     result[1:6,2]=c("diff(x)","diff(x)^2","diff(log(x))")
+     
+     if(do.log==TRUE){par(mfcol=c(1,3))}else{par(mfcol=c(1,2))};par(pty="s")
+     a=acf(diff(x),na.action=na.pass,lag=12,main=paste("diff(x)",ttl,sep=" "),plot=FALSE)
+     result[1,3:14]=(abs(a$acf)>(2/sqrt(a$n.used)))[2:13]
+     a=acf(diff(x)^2,lag=20,na.action=na.pass,main=paste("diff(x)^2",ttl,sep=" "),plot=FALSE)
+     result[2,3:14]=(abs(a$acf)>(2/sqrt(a$n.used)))[2:13]
+     if(do.log==TRUE){
+          a=acf(diff(log(x)),na.action=na.pass,lag=20,main="diff(log(x))",plot=FALSE)
+          result[3,3:14]=(abs(a$acf)>(2/sqrt(a$n.used)))[2:13]
+     }
+     
+     a=pacf(diff(x),lag=12,na.action=na.pass,main=paste("diff(x)",ttl,sep=" "))
+     result[4,3:14]=(abs(a$acf)>(2/sqrt(a$n.used)))
+     a=pacf(diff(x)^2,na.action=na.pass,lag=12,main=paste("diff(x)^2",ttl,sep=" "))
+     result[5,3:14]=(abs(a$acf)>(2/sqrt(a$n.used)))
+     if(do.log==TRUE){
+          a=pacf(diff(log(x)),na.action=na.pass,lag=12,main=paste("diff(log(x))",ttl,sep=" "))
+          result[6,3:14]=(abs(a$acf)>(2/sqrt(a$n.used)))
+     }
+     return(result)
+}
+
+```
+
+Here are the results for F:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+identify_arma(price.5min.F,TRUE,"F")
+
+```
+
+...then GM ARMA
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+identify_arma(price.5min.GM)
+```
+
+### 1(c) Compute the returns and check to see if there is no autocorrelation due to market frictions.
+
+Returns were computed and autocorrelation evaluated in my answer to 1(b). To determine whether these transformations result in models free of autocorrelation, I test for stationarity using Dickey-Fuller and Ljung root tests. I find the results inconclusive and re-test with KPSS. 
+
+Dickey-Fuller suggests F is stationary for simple return (diff(price)), return variance (diff(price)^2) and log return (diff(log(price)) models. Ljung finds all to be non-stationary. Re-testing with KPSS, I conclude the three transformations are roughly stationary for F.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+test_root(list(price.5min.F,diff(price.5min.F),diff(price.5min.F)^2,diff(log(price.5min.F))),
+          c("x","diff(x)","diff(x)^2","diff(log(x))"))
+
+test_trend(list(price.5min.F,diff(price.5min.F),diff(price.5min.F)^2,diff(log(price.5min.F))),
+          c("x","diff(x)","diff(x)^2","diff(log(x))"))
+```
+
+Using the same tests on GM, I find it is stationary only for the simple return (diff(price)) and log return (diff(log(price))) series:
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+test_root(list(price.5min.GM,diff(price.5min.GM),diff(price.5min.GM)^2,diff(log(price.5min.GM))),
+          c("x","diff(x)","diff(x)^2","diff(log(x))"))
+
+test_trend(list(price.5min.GM,diff(price.5min.GM),diff(price.5min.GM)^2,diff(log(price.5min.GM))),
+          c("x","diff(x)","diff(x)^2","diff(log(x))"))
+```
+
+### 1(d) Compute the duration between successive transactions; test if the durations follow exponential distribution; ignore the duration between successive days.
+
+Given an exponential distribution of the durations, if there is no information in the data, then plotting the ordered returns should be exponential and plotting the log of the returns should result in a straight line.
+
+Below I've plotted the original price series and log duration using two different methods for a single day, 24 Jun 2013. The first log(duration) plot uses the method provided in class. It gave me a surprising (based on the lecture) straight line result. Accordinaly, I tried a different log method which more closely approximates the results from class and suggests there is information in the data. 
+
+First for F:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+compute_duration=function(trade.from,trade.to,x){
+     par(mfrow=c(1,3));par(pty="s")
+     plot(x$PRICE[paste(trade.from,"::",trade.to,sep="")],
+          main=paste("raw prices ",trade.from,":",trade.to))
+     
+     duration.raw=as.numeric(diff(index(x[paste(trade.from,"::",trade.to,sep="")])))
+     duration.ordered=duration.raw[order(duration.raw,decreasing=F)]
+     
+     duration.log=NULL
+     for(i in 1:length(duration.ordered)){
+          duration.log[i]=log(1-(i/(length(duration.ordered)+1)))
+     }
+     plot(duration.ordered,duration.log,main="log duration (per class)")
+     plot(log(duration.ordered),main="log duration")
+     
+     return(duration.raw)
+}
+```
+
+First for F:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+duration.F=compute_duration(as.POSIXct("2013-06-24 09:40:00"),
+                            as.POSIXct("2013-06-24 15:50:00"),price.1sec.F)
+```
+
+Then for GM:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+duration.GM=compute_duration(as.POSIXct("2013-06-24 09:40:00"),
+                            as.POSIXct("2013-06-24 15:50:00"),price.1sec.GM)
+```
+
+### 1(e) Is there any dependence in the durations? Characterize the dependence via ARMA models.
+
+The plots for F show dependence in the duration time series. F trade duration also fails the root stationarity tests. The graphics below indicate the dependence in the duration time series. Duration fails two out of three stationarity tests. Specifically, kpss and ljung find it to be non-stationary. I conclude it is non-stationary.
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+par(mfcol=c(1,3));par(pty="s")
+ts.plot(duration.F,main="F duration time series")
+acf(duration.F,main="F duration acf",lag=100)
+pacf(duration.F,main="F duration pacf",lag=100)
+
+test_root(list(duration.F),c("x"))
+test_trend(list(duration.F),c("x"))
+
+```
+
+The same holds true for GM. It's acf/pacf and its kpss and ljung tests lead me to conclude it is not stationary.
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+par(mfcol=c(1,3));par(pty="s")
+ts.plot(duration.GM,main="F duration time series")
+acf(duration.GM,main="F duration acf",lag=100)
+pacf(duration.GM,main="F duration pacf",lag=100)
+
+test_root(list(duration.GM),c("x"))
+test_trend(list(duration.GM),c("x"))
+
+```
+
+A quick check of AIC values returned from an ARIMA model using single period lags suggests that a log(duration) or diff(log(duration)) transformation will improve resuts for both F and GM as they have the lowest AIC values.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+find_best_conversion=function(x){
+     result=as.data.frame(matrix(NA,1,5))
+     names(result)=c("x","diff(x)","log(x)","diff(log(x)","diff(x)^2")
+     result[1,1]=arima(x)$aic
+     result[1,2]=arima(diff(x))$aic
+     result[1,3]=arima(log(x))$aic
+     result[1,4]=arima(diff(log(x)))$aic
+     result[1,5]=arima((diff(x))^2)$aic
+     return(result)
+}
+```
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+find_best_conversion(duration.F)
+```
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+find_best_conversion(duration.GM)
+```
+
+I test log(duration) and diff(log(duration)) against the baseline (duration) for a series of ARIMA models with ar and ma lags to find the best model. I try two methods to find that optimal model. In the first method, I use the order provided from an autoregressive (ar()) model. I then fit an ARIMA model first setting AR (p) to the output order and cycling thru 1-7 MA's. Second, I cycle thru AR and MAs 1-7. In both cases, I select the optimal model based on lowest AIC. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+fit_ar_models=function(x,res="summary"){
+     arm=ar(x, method = "mle")
+     result=as.data.frame(matrix(NA,1,arm$order+1))
+     names(result)=c("order",1:arm$order)
+     result[1,1]=arm$order
+     result[1,2:(arm$order+1)]=2*(1-pnorm(abs(arm$ar)/sqrt(diag(arm$asy.var.coef)),0,1))
+     if(res=="summary"){return(result)}
+     else{return(arm)}
+}
+
+ar.fit=fit_ar_models(duration.F,"summary")
+```
+
+I do that for each F series. Interestingly, did not find that using the AR order improved the results. The best models and results of trend stationarity tests appllied to the residuals for each series are below. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+fit_arima_models=function(x,ar.order=NULL,res="summary"){
+     x=as.numeric(x)
+     best.ar.lag=0;best.ma.lag=0
+     beg.ctr=1;end.ctr=7
+     for(i in beg.ctr:end.ctr){
+          #arima.fit=arima(x,order=c(i,0,i))
+          if(is.null(ar.order)){arima.fit=arima(x,order=c(i,0,i))}
+          else{arima.fit=arima(x,order=c(ar.order,0,i))}
+          aic.stat=arima.fit$aic
+          
+          if(i==beg.ctr){
+               best.ar.lag=i
+               #best.box=box.stat
+               best.aic=aic.stat
+               best.model=arima.fit
+          }
+          else if(aic.stat < best.aic){
+               best.ar.lag=i
+               #best.box=box.stat
+               best.aic=aic.stat
+               best.model=arima.fit
+          }
+     }
+     if(res=="summary"){return(summary(best.model))}
+     else{return(best.model)}
+}
+```
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+a=fit_arima_models(duration.F,NULL,"fit");a;test_trend(list(a$residuals),"resid")
+```
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+b=fit_arima_models(log(duration.F),NULL,"fit");b;test_trend(list(b$residuals),"resid")
+```
+
+While F (log(duration)) has the lowest overall AIC, F (diff(log(duration))) offers lowest AIC and stationarity combination.
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+c=fit_arima_models(diff(log(duration.F)),NULL,"fit");c
+```
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+c;test_trend(list(c$residuals),"resid")
+
+```
+
+### 1(f) Plot the durations of the transaction times for Mondays and Fridays.  Is there any difference in the patterns?
+
+Looking at durations for F Monday and Friday transactions I conclude the duration distributions are highly similar. The code below calculates average duration across 15 minute intervals between 9:40 and 15:50 on Mondays and Fridays from 1 Jan - 6 Jun 2013.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+library(quantmod)
+tmp.mon=price.1sec.F[.indexwday(price.1sec.F)==1]
+tmp.fri=price.1sec.F[.indexwday(price.1sec.F)==5]
+
+mondays=(as.Date("2013-01-01")+0:180)[weekdays((as.Date("2013-01-01")+0:180))  
+%in% c("Monday") ]
+fridays=(as.Date("2013-01-01")+0:180)[weekdays((as.Date("2013-01-01")+0:180))  
+%in% c("Friday") ]
+
+dur.mon.F=as.numeric(diff(index(tmp.mon)))
+dur.fri.F=as.numeric(diff(index(tmp.fri)))
+
+tmp.mon$duration[2:dim(tmp.mon)[1]]=dur.mon.F
+tmp.fri$duration[2:dim(tmp.fri)[1]]=dur.fri.F
+
+rm(dur.mstr.mon) # dur.mstr.mon=as.data.frame(matrix(NA,150,0))
+for(i in 1:length(mondays)){
+     trade.from=as.POSIXct(paste(mondays[i],"09:40:00"))
+     trade.to=as.POSIXct(paste(mondays[i],"15:50:00"))
+     
+     mon.dur=try(aggregatets(tmp.mon$duration[paste(trade.from,"::",
+                                                trade.to,sep="")],
+                         FUN="mean",on="minutes",k=15),silent=TRUE)
+     
+     if (!inherits(mon.dur, "try-error")) {
+          mon.dur=coredata(mon.dur)
+          if(exists("dur.mstr.mon")){
+               dur.mstr.mon=cbind(dur.mstr.mon,mon.dur)
+          }
+          else{dur.mstr.mon=mon.dur}
+     }
+     else next
+}
+
+mon.means=rowMeans(dur.mstr.mon)
+par(mfcol=c(1,1));par(pty="s")
+plot(mon.means,type="l",col="red",main="duration between trades",
+     ylab="mean seconds",xlab="15 minute intervals from 9:40am-15:50pm")
+
+rm(dur.mstr.fri) # dur.mstr.mon=as.data.frame(matrix(NA,150,0))
+for(i in 1:length(fridays)){
+     trade.from=as.POSIXct(paste(fridays[i],"09:40:00"))
+     trade.to=as.POSIXct(paste(fridays[i],"15:50:00"))
+     
+     fri.dur=try(aggregatets(tmp.fri$duration[paste(trade.from,"::",
+                                                trade.to,sep="")],
+                         FUN="mean",on="minutes",k=15),silent=TRUE)
+     
+     if (!inherits(fri.dur, "try-error")) {
+          fri.dur=coredata(fri.dur)
+          if(exists("dur.mstr.fri")){
+               dur.mstr.fri=cbind(dur.mstr.fri,fri.dur)
+          }
+          else{dur.mstr.fri=fri.dur}
+     }
+     else next
+}
+fri.means=rowMeans(dur.mstr.fri)
+lines(fri.means,type="l",col="blue")
+legend("bottom",legend=c("mondays","fridays"),col=c("red","blue"),lwd=1)
+
+```
+
+The graphic indicates significant similarities between average duration on Mondays and Fridays. We'll see the inverse of this (trade volume) in question 4. 
+
+## problems 2-5
+
+The code below summarizes trade data at the 5 minute, 1 hour and 1 day levels of aggregation as required for the remaining problems. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+wkdys=(as.Date("2013-01-01")+0:180)[weekdays((as.Date("2013-01-01")+0:180))  
+%in% c("Monday","Tuesday","Wednesday","Thursday","Friday") ]
+
+summarize_trades <- function(data,wkdys,prd,numPrd){      
+     for(i in 1:length(wkdys)){
+          trade.from=as.POSIXct(paste(wkdys[i],"09:40:00"))
+          trade.to=as.POSIXct(paste(wkdys[i],"15:50:00"))
+          
+          day.data=data[paste(trade.from,"::",trade.to,sep="")]
+
+          if(dim(day.data)[1]>0){
+               if(prd=="days"){
+                    st.time=trade.from
+                    end.time=trade.to
+               }
+               else if(prd=="hours"){
+                    st.time=c("09:00:00","10:00:00","11:00:00","12:00:00","13:00:00",
+                              "14:00:00","15:00:00")
+                    end.time=c("09:59:59","10:59:59","11:59:59","12:59:59","13:59:59",
+                              "14:59:59","15:59:59")
+                    st.time=as.POSIXct(paste(wkdys[i],st.time))
+                    end.time=as.POSIXct(paste(wkdys[i],end.time))
+               }
+               else if(prd=="minutes"){
+                    mins=(as.numeric(trade.to-trade.from)*60)
+                    incr=mins/numPrd
+                    st.time=seq(0,incr,1);st.time=trade.from+(st.time*300)
+                    end.time=st.time+299
+               }
+               else break
+               
+               for(j in 1:(length(st.time))){
+                    time.data=day.data[paste(st.time[j],"::",end.time[j],sep="")]
+                    
+                    if(dim(time.data)[1]>0){
+                         numTrades=dim(time.data)[1]
+                         numShares=sum(as.numeric(time.data$SIZE))
+                         numDollars=numTrades*numShares
+                         hi=max(as.numeric(time.data$PRICE))
+                         lo=min(as.numeric(time.data$PRICE))
+                         op=as.numeric(time.data$PRICE[1])
+                         cl=as.numeric(time.data$PRICE[dim(time.data)[1]])
+                         vwap=sum(as.numeric(time.data$PRICE)*as.numeric(time.data$SIZE))/
+                              sum(as.numeric(time.data$SIZE))
+                    
+                         xts.rcd=data.frame(hi,lo,op,cl,vwap,numTrades,numShares,numDollars)
+                         xts.rcd=xts(xts.rcd,end.time[j])
+
+                         if(exists("xts.time")){xts.time=rbind(xts.time,xts.rcd)}
+                         else{xts.time=xts.rcd}
+                    }
+                    else next  
+               }
+               if(exists("xts.mstr")){xts.mstr=rbind(xts.mstr,xts.time)}
+               else{xts.mstr=xts.time}
+               rm(xts.time)
+          }
+          else next
+     }
+     return(xts.mstr)
+}
+
+# calc 5min, 1hr and 1day summary data
+smry.5mn.F=summarize_trades(xts_data_F,wkdys,"minutes",5)
+smry.5mn.GM=summarize_trades(xts_data_GM,wkdys,"minutes",5)
+smry.1hr.F=summarize_trades(xts_data_F,wkdys,"hours",1)
+smry.1hr.GM=summarize_trades(xts_data_GM,wkdys,"hours",1)
+smry.1dy.F=summarize_trades(xts_data_F,wkdys,"days",1)
+smry.1dy.GM=summarize_trades(xts_data_GM,wkdys,"days",1)
+
+vwap.5min.F=smry.5mn.F$vwap
+vwap.1hr.F=smry.1hr.F$vwap
+vwap.1day.F=smry.1dy.F$vwap
+vwap.5min.GM=smry.5mn.GM$vwap
+vwap.1hr.GM=smry.1hr.GM$vwap
+vwap.1day.GM=smry.1dy.GM$vwap
+
+vwaps.F=list(vwap.5min.F,vwap.1hr.F,vwap.1day.F)
+vwaps.GM=list(vwap.5min.GM,vwap.1hr.GM,vwap.1day.GM)
+
+```
+
+## problem 2
+
+### 2(a) Plot the VWAP price series and test for its stationarity; Do you identify any intraday patterns?
+
+The price series and autocorrelation plots below show significant autocorrelation (acf). However, much of that correlation is accounted for by taking the partial autocorrelation (pacf) suggesting there is little relationship between the $Y_t \sim Y_{t-1}$ residuals and the $Y_{t-2} \sim Y_{t-1}$ residuals. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+plot_series=function(x,ttl,xaxis){
+     par(mfcol=c(3,3));par(pty="s")
+     for(i in 1:length(x)){
+          ts.plot(x[[i]]$vwap,main=paste(ttl,"vwap series",sep=" "),xlab=xaxis[i])
+          acf(x[[i]]$vwap,na.action=na.pass,main=paste(ttl,"vwap autocorrelation (acf)"),xlab=xaxis[i])
+          pacf(x[[i]]$vwap,na.action=na.pass,main=paste(ttl,"vwap partial auto (pacf)"),xlab=xaxis[i])
+     }
+}
+```
+
+First, here are the vwap price series plotf for F:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+plot_series(vwaps.F,"F",c("5min periods","1hr periods","1day periods"))
+```
+
+Desipite low autocorrelation in the graphics, all three series (5min, 1hr, 1day), fail stationarity tests. This is likely due to the lag=1 result. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+test_trend(vwaps.F,c("5min","1hr","1day"))
+```
+
+Second, here are the vwap price series plotf for GM:
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hold',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+plot_series(vwaps.GM,"GM",c("5min periods","1hr periods","1day periods"))
+test_trend(vwaps.GM,c("5min","1hr","1day"))
+```
+
+Regarding intraday patterns, the graphics below show common intraday patterns across F and GM vwap at both the 5 minute and 1 hour aggregation levels. Specifically, both graphics show higher prices in the morning and afternoon time periods. Interestingly, the graphics also show differences between prices by day of week with prices moving up as the week progresses. This is not surprising given that both F and GM saw overall price appreciation during the 1 Jan to 30 Jun 2013 evaluation period. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=6,fig.width=7}
+plot_intraday=function(dow,lst,ttl,int){
+     library(quantmod)
+     for(h in 1:length(lst)){
+          x=lst[[h]]
+          iter=1
+          rm(mstr)
+         day.names=c("Monday","Tuesday","Wednesday","Thursday","Friday")
+          for(i in dow){
+               dow.x=x[.indexwday(x)==i]
+          
+               dow.dates=(as.Date("2013-01-01")+0:180)[weekdays((as.Date("2013-01-01")+0:180)) %in% day.names[i]]
+
+               for(j in 1:length(dow.dates)){
+                    trade.from=as.POSIXct(paste(dow.dates[j],"09:40:00"))
+                    trade.to=as.POSIXct(paste(dow.dates[j],"15:50:00"))
+               
+                    val=try(dow.x[paste(trade.from,"::",trade.to,sep="")],silent=TRUE)
+               
+                    if (!inherits(val, "try-error")) {
+                         val=coredata(val)
+                         if(exists("mstr")){
+                              #mstr=merge(mstr,val)
+                              mstr=cbind(mstr,val)
+                         }
+                         else{mstr=val}
+                    }
+                    else next
+               }
+               means=rowMeans(mstr,na.rm=TRUE)
+               if(iter==1){
+                    if(names(x)=="vwap"){
+                         plot(means,type="l", col=i,main=paste("intraday ",ttl),
+                              ylim=c(0.998*range(means)[1],1.008*range(means)[2]),
+                              ylab="see title",xlab=paste(int," intervals from 9:40am-15:50pm"))
+                    }
+                    else{
+                         plot(means,type="l", col=i,main=paste("intraday ",ttl),
+                         ylab="see title",xlab=paste(int," intervals from 9:40am-15:50pm"))
+                    }
+               }
+               else{
+                    lines(means,type="l",col=i)
+               }
+               iter=iter+1
+          }
+          legend("topleft",legend=c(day.names[dow]),lwd=1,cex=0.8,col=dow)
+     }
+     
+}
+
+par(mfcol=c(2,2));par(pty="s")
+plot_intraday(c(1,3,5),vwaps.F[1:2],"F vwap 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),vwaps.GM[1:2],"GM vwap 1/13-6/13","5 min")
+
+```
+
+### 2(b) Use ACF/PACF to identify appropriate ARMA models.
+
+Based on 2(a), it seems likely that vwap aggregated to the day level is most likely to produce an ARMA series free from autocorrelation. Fitting an ARIMA model to each time series (5 minute, 1 hour, 1 day) shows that relatively simple models yield stationary models. Here are the 5 minute results:
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+a=fit_arima_models(vwap.5min.F,NULL,"fit");a;test_trend(list(a$residuals),"resid")
+```
+
+Here are the 1 day results.
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hold',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+c=fit_arima_models(vwap.1day.F,NULL,"fit");c;test_trend(list(c$residuals),"resid")
+
+```
+
+### 2(c) Compute the autocorrelation for returns based on VWAP and comment
+
+In the graphics below I show the autocorrelation and partial autocorrelation values for F and GM by time period using the following code.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+# calculate returns
+vwap.F=list(diff(vwap.5min.F)[-1],
+            diff(vwap.1hr.F)[-1],
+            diff(vwap.1day.F)[-1])
+
+vwap.GM=list(diff(vwap.5min.GM)[-1],
+            diff(vwap.1hr.GM)[-1],
+            diff(vwap.1day.GM)[-1])
+
+compute_autocorr=function(x,ttl){
+     acf(x,type="correlation",na.action=na.pass,,main=paste(ttl,"autocorrelation",sep=" "))
+     pacf(x,plot=TRUE,na.action=na.pass,main=paste(ttl,"partial auto",sep=" "))
+}
+```
+
+First is F with (from left to right) 5min, 1hr and 1day (top to bottom) auto and partial auto correlations for the log return series. Note that all autocorrelation and partial values show only minor deviation from the $\frac{2}{\sqrt(T)}$ bands suggesting most of the autocorrelation has been removed from the F time series. Note also that while the magnitude of the band ranges increase from 5 minute to 1 day intervals, the one day return interval has the least band violations. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+# compute autocorrelation
+par(mfcol=c(2,3));par(pty="s")
+sapply(vwap.F,FUN=compute_autocorr,"F")
+
+```
+
+Next is GM again (from left to right) 5min, 1hr and 1day (top to bottom) auto and partial auto correlations for the log return series. 
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+par(mfcol=c(2,3));par(pty="s")
+sapply(vwap.GM,FUN=compute_autocorr,"GM")
+
+```
+
+### 2(d) Fit GARCH models for the return variances
+
+I fit GARCH models using two approaches. The first approach is modeled on the example provided in "garch example ex.doc" and uses garch() from the tseries package. That model loops through ARMA and GARCH settings to find the "best"" fit that maximizes the Box.Ljung test. 
+
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+#a=find_best_conversion(as.numeric(rt.5min.vwap.F[-1]));which.min(a)
+
+single_garch=function(x,res="summary"){
+     library(tseries)
+     p=q=best.aic=0
+     for(i in 1:3){
+          improving=TRUE
+          while(improving){
+               if(p==0){p=1}
+               garch.fit=garch(x,order=c(p,q),trace=F)
+               if((i==1 & p==1) | summary(garch.fit)$l.b.test$p.value>(best.aic+0.1)){
+                    best.fit=garch.fit
+                    best.aic=summary(garch.fit)$l.b.test$p.value
+                    best.p=p
+                    p=p+1
+               }
+               else{
+                    improving=FALSE
+               }
+          }
+          improving=TRUE
+          while(improving){
+               if(q==0){q=1;p=0}
+               garch.fit=garch(x,order=c(p,q),trace=F)
+               if((i==1 & q==1)  | summary(garch.fit)$l.b.test$p.value>(best.aic+0.1)){
+                    best.fit=garch.fit
+                    best.aic=summary(garch.fit)$l.b.test$p.value
+                    best.q=q
+                    q=q+1
+               }
+               else{
+                    improving=FALSE
+               }
+          }
+          p=best.p;q=best.q
+     }
+     if(res=="summary"){return(summary(best.fit))}
+     else{return(best.fit)}
+}
+```
+
+As these results are less interesting than results obtained using the fGarch() below, I'll comment on the best F model only. The garch() fit on the 1hr vwap simple return has the highest overall Ljung p-value indicating the Box-Ljung null hypothesis of independence is accepted and the resulting series is stationary. In this case, as in all cases, the Jarque-Bera null test of normality is rejected indicating the presenece of skew and/or kurtosis (presumably on the residuals). 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='asis',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+single_garch((diff(vwap.1hr.F)^2)[-1],"summary")
+
+```
+
+The second approach is based on the document timeseries.examples.R and used fGarch(). That function uses internal garch() models to fit the series based on max-likelihood estimates of a conditionally normal distribution and internal arma() models fitting autoregressive and moving average models based on conditional east squares. Looping through the permuations for these parameters is difficult. Therefore, I pre-specify a numer of combinations to try. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+nested_garch=function(x,res="summary"){
+     library(fGarch)
+     best.aic=0
+     set=as.data.frame(matrix(data=c(
+     1,1,0,0,1,1,0,1,1,1,1,0,1,1,1,1,2,1,0,0,2,1,1,0,2,1,0,1,2,1,1,1,
+     1,2,0,0,1,2,1,0,1,2,0,1,1,2,1,1,1,1,2,0,1,1,2,1,1,1,2,2,1,1,0,2,
+     1,1,1,2,2,2,0,0,2,2,0,1,2,2,1,0,2,2,1,1,2,2,2,0,2,2,2,1,2,2,2,2,
+     2,2,0,2,2,2,1,2),nrow=26,ncol=4,byrow=TRUE))
+          
+     for(i in 1:dim(set)[1]){
+          garch.fit=garchFit(as.formula(paste0("~arma(",set[i,3],",",set[i,4],")+garch(",set[i,1],",",set[i,2],")",collapse=NULL)),data=as.numeric(x),trace=F)
+          
+          if(i==1 | garch.fit@fit$ics[[1]]<(best.aic-0.005)){
+               best.fit=garch.fit
+               best.aic=best.aic=garch.fit@fit$ics[[1]]
+          }
+     }
+     if(res=="summary"){return(summary(best.fit))}
+     else{return(best.fit)}
+}
+
+```
+
+The best F model is based on simple returns (diff(vwap)^2) for 1hr intervals. That model hads 8 parameters of which 6 are significant. It has a -5.7 AIC and passes the Ljung test for squared residuals. 
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='asis',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+nested_garch(((diff(vwap.1hr.F))^2)[-1],"summary")
+
+```
+
+The best GM model is based on simple returns (diff(vwap)^2) for 1day intervals. That model hads 4 parameters of which 3 are significant. It has a -10 AIC and passes the Ljung test for residuals and squared residuals.
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='asis',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+nested_garch(((diff(vwap.1day.GM))^2)[-1],"summary")
+
+```
+
+## problem 3
+### How does the time aggregation of data affect the dependence?  Compare the results in Problem 2 with results in Problem 1
+
+By averaging-out some of the variance in shorter period time series, aggregation makes seasonal patterns easier for fitting algorithms to find. The best way to see that is to compare vwap return series for 1day in problem two with the 5min from problem two after spitting out seasonality patterns. In the series below, I split out seasonality using the decompose() function in the stats package. I then compare acf on the original series (LHS) with the pacf on the underlying trend + random noise (i.e., netting out seasonality). 
+
+Results can be seen from looking top to bottom on RHS where pacf has been better able to fit the de-seasonalized 1day data than the de-seasonalized 5min data. 
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hide',warning=FALSE,fig.show='asis',fig.height=6,fig.width=7}
+
+# de-seasonalize 
+par(mfrow=c(2,2))
+a=decompose(ts(diff(log(vwap.1day.F))[-1],frequency=4));
+# tried weekly, monthly. 4 works best (approx weekly)
+acf(diff(log(vwap.1day.F))[-1],type="correlation",plot=TRUE,na.action=na.pass,drop.lag.0=TRUE)
+pacf(a$trend+a$random,plot=TRUE,na.action=na.pass)
+
+a=decompose(ts(diff(log(vwap.5min.F))[-1],frequency=(12*6.1667*20.6667)))
+# tried hourly, daily, weekly and monthly. monthly worked best 
+acf(diff(log(vwap.5min.F))[-1],type="correlation",plot=TRUE,na.action=na.pass,drop.lag.0=TRUE)
+pacf(a$trend+a$random,plot=TRUE,na.action=na.pass)
+
+```
+
+## problem 4
+Here we focus on five minute interval data. For each stock do the following:  Let $x_t$ denote the number of trades in the $t^th$ 5-minute interval, and $y_t$ as the return between the intervals based on VWAP.
+
+### 4(a) Consider the bivariate time series ($x_t,y_t$). How does $y_t$ vary with $x_t$? Are there intraday periodic patterns in ($x_t, y_tF$)?
+
+I'll use correlation to illustrate how $x_t$ and $y_t$ co-vary. Looking at the bivariate time series across the entire series, the correlations (as shown below) are 0.37 for trades and vwap log returns, 0.08 for trades and vwap and 0.53 for trades and high-low gap. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='asis',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+# correlations across entire series
+cor(smry.5mn.F$numTrades[-1], abs(diff(log(smry.5mn.F$vwap))[-1]))
+cor(smry.5mn.F$numTrades, abs(smry.5mn.F$vwap))
+cor(smry.5mn.F$numTrades,abs(smry.5mn.F$hi-smry.5mn.F$lo))
+
+```
+
+However, those results don't match plots of intraday variation for trades, returns, vwaps and high/low gaps below. In particular, while there is a relationship between between trade volume and vwap return, the relationship between trade volume and vwap is more pronounced than implied by the overal correation. Same for trade and hi-lo. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+par(mfrow=c(2,2));par(pty="s")
+plot_intraday(c(1,3,5),list(smry.5mn.F$numTrades),"trade vol 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list(diff(log(smry.5mn.F$vwap))),"vwap rt 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list(smry.5mn.F$vwap),"vwap 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list((smry.5mn.F$hi - smry.5mn.F$lo)),"hi-lo 1/13-6/13","5 min")
+
+```
+
+So, I re-correlate using the means of the 5 minute intervals aggregated at the day of week level for Mondays, Wedensdays and Fridays. Those results show significant variation in the correlations by day of week and time of day. 
+
+Given averaging that occurs in the calculation of vwap, the trade volume to vwap return correlation is relatively constant across days. In contrast the trade volume to vwap price correlation is higher in the middle of the week than at the end. Finally, the trade volume to hi-low peaks later in the week at 0.7+.
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='asis',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+get_intraday_means=function(dow,lst){
+     library(quantmod)
+     for(h in 1:length(lst)){
+          x=lst[[h]]
+          iter=1
+          rm(mstr)
+         day.names=c("Monday","Tuesday","Wednesday","Thursday","Friday")
+          for(i in dow){
+               dow.x=x[.indexwday(x)==i]
+          
+               dow.dates=(as.Date("2013-01-01")+0:180)[weekdays((as.Date("2013-01-01")+0:180)) %in% day.names[i]]
+
+               for(j in 1:length(dow.dates)){
+                    trade.from=as.POSIXct(paste(dow.dates[j],"09:40:00"))
+                    trade.to=as.POSIXct(paste(dow.dates[j],"15:50:00"))
+               
+                    val=try(dow.x[paste(trade.from,"::",trade.to,sep="")],silent=TRUE)
+               
+                    if (!inherits(val, "try-error")) {
+                         val=coredata(val)
+                         if(exists("mstr")){mstr=cbind(mstr,val)}
+                         else{mstr=val}
+                    }
+                    else next
+               }
+               means=rowMeans(mstr,na.rm=TRUE)
+               if(exists("result")){result=rbind(result,means)}
+               else{result=means}
+               iter=iter+1
+          }
+     }
+     return(result)
+}
+
+tradeMeans=get_intraday_means(c(1,3,5),list(smry.5mn.F$numTrades))
+rtrnMeans=get_intraday_means(c(1,3,5),list(abs(diff(log(smry.5mn.F$vwap)))))
+priceMeans=get_intraday_means(c(1,3,5),list(smry.5mn.F$vwap))
+hiloMeans=get_intraday_means(c(1,3,5),list(abs(smry.5mn.F$hi-smry.5mn.F$lo)))
+
+result=as.data.frame(matrix(NA,9,2));names(result)=c("cor/day","value")
+     result[1:9,1]=c("Mon/return","Mon/price","Mon/hi-lo","Wed/return",
+                     "Wed/price","Wed/hi-lo","Fri/return","Fri/price","Fri/hi-lo")
+iter=1
+for(i in 1:3){
+     result[iter,2]=cor(tradeMeans[i,],rtrnMeans[i,])
+     result[iter+1,2]=cor(tradeMeans[i,],priceMeans[i,])
+     result[iter+2,2]=cor(tradeMeans[i,],hiloMeans[i,])
+     iter=iter+3
+}
+print(result)
+```
+
+### 4(b) optional
+
+### 4(c) Is there any particular exchange that offers better price?
+
+Yes. Aggregating 5min interval data over all days in the 1 Jan to 30 Jun 2013 period For F, if you are selling, vwaps for exchanges "T", "P" and "Z" spend most of their time above the vwap for exchange "D". The average gain for selling on these exchanges over "D" is about 0.5% but can spike to as high as 3%. Conversely, if buying, the safest bet is to buy on "D". However, placing below-market orders on the other exchanges may save 2%.
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,results='hide',warning=FALSE,fig.show='asis',fig.height=4,fig.width=7}
+
+top.vol.F=top.vol.F[1:4]
+top.vol.GM=top.vol.GM[1:4]
+
+samp.times=c("09:44:59","09:49:59","9:54:59","09:59:59","10:04:59","10:09:59","10:14:59","10:19:59","10:24:59","10:29:59","10:34:59","10:39:59","10:44:59","10:49:59","10:54:59","10:59:59","11:04:59","11:09:59","11:14:59","11:19:59","11:24:59","11:29:59","11:34:59","11:39:59","11:44:59","11:49:59","11:54:59","11:59:59","12:04:59","12:09:59","12:14:59","12:19:59","12:24:59","12:29:59","12:34:59","12:39:59","12:44:59","12:49:59","12:54:59","12:59:59","13:04:59","13:09:59","13:14:59","13:19:59","13:24:59","13:29:59","13:34:59","13:39:59","13:44:59","13:49:59","13:54:59","13:59:59","14:04:59","14:09:59","14:14:59","14:19:59","14:24:59","14:29:59","14:34:59","14:39:59","14:44:59","14:49:59","14:54:59","14:59:59","15:04:59","15:09:59","15:14:59","15:19:59","15:24:59","15:29:59","15:34:59","15:39:59","15:44:59","15:49:59")
+
+par(mfrow=c(1,1))
+ex.tm.vwap.mn=NULL
+for(i in 1:length(top.vol.F)){
+     exchg.dat=xts_data_F[xts_data_F$EX==top.vol.F[i],];print(dim(exchg.dat))
+     smry.dat=summarize_trades(exchg.dat,wkdys,"minutes",5);smry.dat=smry.dat$vwap
+     for(j in 1:length(samp.times)){
+          ex.tm.vwap.mn[j]=mean(smry.dat$vwap[grep(samp.times[j],index(smry.dat))])
+     }
+     if(i==1){
+          plot(ex.tm.vwap.mn,type="l",col=i,main="intraday vwap by exchange",ylim=c(13.78,13.85),
+                    ylab="USD",xlab="5-min intervals between 9:40am-15:50pm",lwt=2)
+     }
+     else{lines(ex.tm.vwap.mn,type="l",col=i)}
+     if(exists("backup")){backup=rbind(backup,ex.tm.vwap.mn)}else{backup=ex.tm.vwap.mn}
+}
+legend("topleft",legend=top.vol.F,lwd=1,cex=0.8,col=c(1:length(top.vol.F)))
+
+#plot(backup[1,],type="l",col=i,main="intraday vwap by exchange",ylim=c(13.78,13.85),
+#                    ylab="USD",xlab="5-min intervals between 9:40am-15:50pm",lwd=2)
+#for(i in 2:dim(backup)[1]){lines(backup[i,],type="l",col=i)}
+
+```
+
+## problem 5
+Quantative Posting: In algorithmic trading, the posting of orders at various points in time during a day must be determined aproiri; For 5-min data:
+
+### 5(a) Plot the volume and check for any seasonal (time of the day) effect.
+
+The graphics below show intraday trade, share and dollar volumes for F and GM for 5min intervals between 9:40 and 15:50 aggregated across the 1 Jan to 30 Jun 2013 period. Not surprisingly the three series are highly correlated. More interesting are three aspects of the seasonality:
+
+1. F and GM share similar seasonality across the three series.
+
+2. Volumes peak in the early (9:40-10:00) and late (15:30-15:50) parts of the day.
+
+3. Average volumes increase from Monday with Wednesday and Friday volumes being similar. 
+ 
+```{r eval=TRUE,cache=TRUE,echo=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=6,fig.width=7}
+
+par(mfrow=c(2,3))
+plot_intraday(c(1,3,5),list(smry.5mn.F$numTrades),"F trades 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list(smry.5mn.F$numShares),"F shares 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list(smry.5mn.F$numDollars),"F dollars 1/13-6/13","5 min")
+
+plot_intraday(c(1,3,5),list(smry.5mn.GM$numTrades),"GM trades 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list(smry.5mn.GM$numShares),"GM shares 1/13-6/13","5 min")
+plot_intraday(c(1,3,5),list(smry.5mn.GM$numDollars),"GM dollars 1/13-6/13","5 min")
+
+```
+
+### 5(b) Develop a model that can guide investors to predict the orderflow during the course of a day.
+### 5(c) Validate your model with a hold-out sample.
+
+Note: Due to the iterative nature of model development, I've combined answers to 5(b) and 5(c) below as they rely on the same code. 
+
+The best method I found to predict order flow was to 1. decompose the stream into its seasonal, trend and random components, 2. use the raw seasonal pattern as a base, then 3. layer on the trend component using a fGarch(arma(0,5) garch(3,0)) model. The code below implements that model. More explanation below. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+
+library(quantmod)
+library(forecast)
+
+select_model=function(x,trainNum,testNum,period){
+     day.names=c("Monday","Tuesday","Wednesday","Thursday","Friday")
+     dow.dates=(as.Date("2013-01-02")+0:149)[weekdays((as.Date("2013-01-02")+0:149)) %in% day.names]
+     
+     if(period=="days"){increments=c(trainNum,testNum)}
+     if(period=="weeks"){increments=c(trainNum,testNum)*5}
+     if(period=="months"){increments=c(trainNum,testNum)*21}
+     print(increments)
+     
+     days.ctr=1
+     train.start=dow.dates[days.ctr];days.ctr=days.ctr+increments[1]-1
+     train.end=dow.dates[days.ctr];days.ctr=days.ctr+1
+     test.start=dow.dates[days.ctr];days.ctr=days.ctr+increments[2]-1
+     test.end=dow.dates[days.ctr];days.ctr=days.ctr+1
+          
+     trainDat=x[paste(as.POSIXct(paste(train.start,"09:40:00")),"::",
+                  as.POSIXct(paste(train.end,"15:50:00")),sep="")]
+     testDat=x[paste(as.POSIXct(paste(test.start,"09:40:00")),"::",
+                  as.POSIXct(paste(test.end,"15:50:00")),sep="")]
+     
+     ######### taking out seasonality
+     a=decompose(ts(trainDat,frequency=74))
+     plot(a)
+     
+     seas=a$seasonal[1:74]
+     
+     trend=a$trend;b=is.na(trend);trend[b]=a$x[b]
+     garch.trend=garchFit(formula=~arma(0,5)+garch(3,0),data=trend,trace=F);summary(garch.trend)
+     garch.trend.pred=predict(garch.trend,n.ahead=dim(testDat)[1],trace=FALSE,plot=F)
+     
+     #rand=a$random;b=is.na(rand);rand[b]=a$x[b]
+     #garch.rand=garchFit(formula=~arma(1,1)+garch(1,2),data=rand,trace=F);summary(garch.rand)
+     #garch.rand.pred=predict(garch.rand,n.ahead=dim(testDat)[1],trace=FALSE,plot=F)
+     
+     #both=a$trend+a$random;b=is.na(both);both[b]=a$x[b]
+     #garch.both=garchFit(formula=~arma(1,1)+garch(1,2),data=both,trace=F);summary(garch.both)
+     #garch.both.pred=predict(garch.both,n.ahead=dim(testDat)[1],trace=FALSE,plot=F)
+     
+     par(mfrow=c(1,1))
+     plot(as.numeric(testDat),type="l",main="F trade volume prediction",ylim=c(400,2300),lwd=2,
+          ylab=c("numer of trades"),xlab=c("5 minute intervals on 16th day"))
+     d=seas+garch.trend.pred$meanForecast
+     lines(as.numeric(d),type="l",col="red",lwd=2)
+     legend("topright", c("test","predicted"), col=c("black","red"), cex=0.9,lwd=2)
+     
+}
+```
+
+I trained the model on 15 days of F data and then predicted on the 16th. In the interest of full disclosure, this model was sensitive to train / test periods. This is likely due to flaws in the execution, not the approach. In particular, the model would need to dynamically the seasonality and garch settings based on on the length of the training and test periods. 
+
+```{r eval=TRUE,cache=TRUE,echo=TRUE,message=FALSE,results='hide',warning=FALSE,fig.show='asis',fig.height=7,fig.width=7}
+select_model(smry.5mn.F$numTrades,15,1,"days")
+```
